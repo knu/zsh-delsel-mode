@@ -1,0 +1,129 @@
+# -*- mode: sh -*-
+#
+# delsel-mode - zle tweak to delete an active region just by hitting a key
+#
+# Copyright (c) 2019 Akinori MUSHA
+# Licensed under the 2-clause BSD license.
+#
+# By default, an active region is deleted or replaced by invoking the
+# following commands:
+#
+#     self-insert
+#     delete-char
+#     backward-delete-char
+#     yank
+#
+# To add more commands, call `delsel-mode.wrap-command` like so:
+#
+#     delsel-mode.wrap-command your-insert-command
+#     delsel-mode.wrap-command your-delete-command
+#
+# Usage:
+#     autoload -Uz delsel-mode
+#     delsel-mode
+#
+
+delsel-mode.delete-region() {
+    emulate -L zsh
+
+    if ((REGION_ACTIVE)); then
+        zle deactivate-region
+        if ((MARK < CURSOR)); then
+            LBUFFER=${LBUFFER[1,MARK]}
+        else
+            RBUFFER=${RBUFFER[1+MARK-$#LBUFFER,$#RBUFFER]}
+        fi
+    fi
+}
+
+delsel-mode.wrap-command() {
+    emulate -L zsh
+    local cmdname=$1
+    local -A wrapped_commands
+    zstyle -a :delsel-mode wrapped_commands wrapped_commands
+
+    [[ -n ${wrapped_commands[$cmdname]+t} ]] && return 0
+
+    local funcname=${$(zle -lL | awk -v f=$cmdname '$1=="zle"&&$2=="-N"&&$3==f{print $4;exit}'):-.$cmdname}
+
+    # For url-quote-magic which does not zle -N itself
+    zle -la $funcname || zle -N $funcname
+
+    local widgetname=delsel-mode.$cmdname
+
+    case $cmdname in
+        *delete-*)
+            eval "
+                $widgetname() {
+                    if ((REGION_ACTIVE)); then
+                        zle delsel-mode.delete-region
+                    else
+                        zle $funcname
+                    fi
+                }
+            "
+            ;;
+        *)
+            eval "
+                $widgetname() {
+                    zle delsel-mode.delete-region
+                    zle $funcname
+                }
+            "
+    esac
+    zle -N $widgetname
+    zle -A $widgetname $cmdname
+
+    wrapped_commands+=($cmdname $funcname)
+    zstyle :delsel-mode wrapped_commands ${(kv)wrapped_commands}
+}
+
+delsel-mode.unwrap-command() {
+    emulate -L zsh
+    local cmdname=$1
+    local -A wrapped_commands
+    zstyle -a :delsel-mode wrapped_commands wrapped_commands
+    local funcname=${wrapped_commands[$cmdname]}
+
+    [[ -n $funcname ]] && zle -A $funcname $cmdname
+
+    unset "wrapped_commands[$cmdname]"
+    zstyle :delsel-mode wrapped_commands ${(kv)wrapped_commands}
+}
+
+delsel-mode.on() {
+    emulate -L zsh
+    local cmdname
+
+    for cmdname (
+        self-insert
+        delete-char
+        backward-delete-char
+        yank
+    ) {
+        delsel-mode.wrap-command $cmdname
+    }
+
+    return 0
+}
+
+delsel-mode.off() {
+    emulate -L zsh
+    local cmdname
+    local -A wrapped_commands
+    zstyle -a :delsel-mode wrapped_commands wrapped_commands
+
+    for cmdname (${(k)wrapped_commands}) {
+        delsel-mode.unwrap-command $cmdname
+    }
+}
+
+zle -N delsel-mode.delete-region
+zle -N delsel-mode.on
+zle -N delsel-mode.off
+
+delsel-mode() {
+    delsel-mode.on
+}
+
+[[ -o kshautoload ]] || delsel-mode "$@"
